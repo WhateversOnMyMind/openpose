@@ -1,0 +1,53 @@
+# ---------- Base image -------------------------------------------------------
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+# ---------- Dependencies -----------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git wget curl unzip pkg-config \
+    libopenblas-dev libatlas-base-dev liblapack-dev libboost-all-dev \
+    libprotobuf-dev protobuf-compiler libleveldb-dev liblmdb-dev \
+    libhdf5-dev libsnappy-dev \
+    libgflags-dev libgoogle-glog-dev \
+    libopencv-dev libjpeg-dev libpng-dev libtiff-dev \
+    tzdata python-is-python3 python3 python3-dev python3-pip \
+    python3-numpy python3-protobuf && \
+    ln -fs /usr/share/zoneinfo/Asia/Seoul /etc/localtime && \
+    dpkg-reconfigure --frontend noninteractive tzdata && \
+    pip3 install --no-cache-dir numpy protobuf opencv-python && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------- Build & install Caffe (CPU-only) --------------------------------
+WORKDIR /opt
+RUN git clone https://github.com/CMU-Perceptual-Computing-Lab/caffe.git
+
+WORKDIR /opt/caffe/build
+RUN cmake .. \
+      -DBUILD_python=OFF \
+      -DCPU_ONLY=ON \
+      -DBUILD_SHARED_LIBS=ON && \
+    make -j"$(nproc)" && \
+    make install && \
+    ldconfig
+
+# ---------- Build OpenPose (GPU) ---------------------------------------------
+WORKDIR /opt
+RUN git clone https://github.com/CMU-Perceptual-Computing-Lab/openpose.git
+
+WORKDIR /opt/openpose
+RUN git submodule update --init --recursive
+
+WORKDIR /opt/openpose/build
+RUN cmake .. \
+      -DCUDA_ARCH_BIN=86 \
+      -DBUILD_PYTHON=OFF \
+      -DUSE_CUDNN=ON \
+      -DCaffe_INCLUDE_DIRS=/usr/local/include \
+      -DCaffe_LIBS=/usr/local/lib && \
+    make -j"$(nproc)"
+
+# ---------- Default entry ----------------------------------------------------
+WORKDIR /opt/openpose
+ENTRYPOINT ["./build/examples/openpose/openpose.bin"]
