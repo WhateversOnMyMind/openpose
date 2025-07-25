@@ -1,53 +1,61 @@
-# ---------- Base image -------------------------------------------------------
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+# Use NVIDIA CUDA with cuDNN and development tools
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu20.04
 
+# Avoid interactive timezone config
 ENV DEBIAN_FRONTEND=noninteractive
-ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+RUN ln -fs /usr/share/zoneinfo/Asia/Seoul /etc/localtime && \
+    apt-get update && apt-get install -y tzdata && \
+    dpkg-reconfigure -f noninteractive tzdata
 
-# ---------- Dependencies -----------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git wget curl unzip pkg-config \
-    libopenblas-dev libatlas-base-dev liblapack-dev libboost-all-dev \
-    libprotobuf-dev protobuf-compiler libleveldb-dev liblmdb-dev \
-    libhdf5-dev libsnappy-dev \
-    libgflags-dev libgoogle-glog-dev \
-    libopencv-dev libjpeg-dev libpng-dev libtiff-dev \
-    tzdata python-is-python3 python3 python3-dev python3-pip \
-    python3-numpy python3-protobuf && \
-    ln -fs /usr/share/zoneinfo/Asia/Seoul /etc/localtime && \
-    dpkg-reconfigure --frontend noninteractive tzdata && \
-    pip3 install --no-cache-dir numpy protobuf opencv-python && \
-    rm -rf /var/lib/apt/lists/*
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential cmake git wget curl unzip \
+    libopencv-dev libprotobuf-dev protobuf-compiler \
+    libopenblas-dev libatlas-base-dev libgflags-dev libgoogle-glog-dev \
+    libboost-all-dev libhdf5-dev liblmdb-dev libsnappy-dev \
+    libleveldb-dev \
+    python3 python3-pip && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip3 install numpy opencv-python
 
-# ---------- Build & install Caffe (CPU-only) --------------------------------
+# Clone and patch Caffe
 WORKDIR /opt
-RUN git clone https://github.com/CMU-Perceptual-Computing-Lab/caffe.git
+RUN git clone https://github.com/CMU-Perceptual-Computing-Lab/caffe.git && \
+    cd caffe && git checkout 1807aada
 
-WORKDIR /opt/caffe/build
-RUN cmake .. \
-      -DBUILD_python=OFF \
-      -DCPU_ONLY=ON \
-      -DBUILD_SHARED_LIBS=ON && \
+# Patch deprecated OpenCV macros
+RUN sed -i 's/CV_LOAD_IMAGE_COLOR/cv::IMREAD_COLOR/g; s/CV_LOAD_IMAGE_GRAYSCALE/cv::IMREAD_GRAYSCALE/g' \
+    /opt/caffe/src/caffe/layers/window_data_layer.cpp && \
+    sed -i 's/CV_LOAD_IMAGE_COLOR/cv::IMREAD_COLOR/g; s/CV_LOAD_IMAGE_GRAYSCALE/cv::IMREAD_GRAYSCALE/g' \
+    /opt/caffe/src/caffe/util/io.cpp
+
+# Build Caffe
+WORKDIR /opt/caffe
+RUN mkdir build && cd build && \
+    cmake .. \
+    -DBUILD_python=OFF \
+    -DCPU_ONLY=OFF \
+    -DBUILD_SHARED_LIBS=ON \
+    -DCUDA_ARCH_NAME=Manual \
+    -DCUDA_ARCH_BIN="86" \
+    -DCUDA_ARCH_PTX="" && \
     make -j"$(nproc)" && \
     make install && \
     ldconfig
 
-# ---------- Build OpenPose (GPU) ---------------------------------------------
+
+# Clone and build OpenPose
 WORKDIR /opt
 RUN git clone https://github.com/CMU-Perceptual-Computing-Lab/openpose.git
-
 WORKDIR /opt/openpose
 RUN git submodule update --init --recursive
 
-WORKDIR /opt/openpose/build
-RUN cmake .. \
-      -DCUDA_ARCH_BIN=86 \
-      -DBUILD_PYTHON=OFF \
-      -DUSE_CUDNN=ON \
-      -DCaffe_INCLUDE_DIRS=/usr/local/include \
-      -DCaffe_LIBS=/usr/local/lib && \
+RUN mkdir build && cd build && \
+    cmake .. \
+    -DCUDA_ARCH_BIN=86 \
+    -DBUILD_PYTHON=OFF \
+    -DCMAKE_BUILD_TYPE=Release && \
     make -j"$(nproc)"
 
-# ---------- Default entry ----------------------------------------------------
-WORKDIR /opt/openpose
-ENTRYPOINT ["./build/examples/openpose/openpose.bin"]
+# Set default working directory when container starts
+WORKDIR /openpose
